@@ -9,3 +9,4 @@ __pycache__/
 
 # Cache directory for computed values
 computed/
+.DS_Store
