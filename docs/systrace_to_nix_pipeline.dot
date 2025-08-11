@@ -1,0 +1,151 @@
+digraph SystraceToNixPipeline {
+    rankdir=LR;
+    compound=true;
+    node [shape=box, style=filled];
+    graph [fontsize=16, fontname="Arial"];
+    
+    // Title
+    labelloc="t";
+    label="Systrace to Nix Conversion Pipeline";
+    
+    // Input Phase
+    subgraph cluster_0 {
+        label="1. Input";
+        style=filled;
+        color=lightblue;
+        fillcolor=aliceblue;
+        
+        strace [label="Systrace File\n(.strace)", fillcolor=lightblue, shape=note];
+        raw_syscalls [label="Raw Syscalls\n• openat()\n• read()\n• write()\n• execve()\n• socket()", fillcolor=white, shape=plaintext];
+        
+        strace -> raw_syscalls;
+    }
+    
+    // Parsing Phase
+    subgraph cluster_1 {
+        label="2. Parsing";
+        style=filled;
+        color=lightgreen;
+        fillcolor=honeydew;
+        
+        lexer [label="Lexical\nAnalysis", fillcolor=lightgreen];
+        parser [label="Syntax\nParser", fillcolor=lightgreen];
+        ast [label="AST", fillcolor=palegreen, shape=ellipse];
+        
+        lexer -> parser -> ast;
+    }
+    
+    // Analysis Phase
+    subgraph cluster_2 {
+        label="3. Analysis";
+        style=filled;
+        color=orange;
+        fillcolor=oldlace;
+        
+        dep_extract [label="Dependency\nExtraction", fillcolor=lightsalmon];
+        
+        subgraph cluster_deps {
+            label="Dependencies";
+            style=dashed;
+            
+            files [label="Files\n/etc/passwd\n/usr/share/...", fillcolor=yellow];
+            bins [label="Binaries\n/bin/ls\n/usr/bin/env", fillcolor=yellow];
+            libs [label="Libraries\nlibc.so.6\nlibm.so.6", fillcolor=yellow];
+            network [label="Network\nPorts\nProtocols", fillcolor=yellow];
+        }
+        
+        dep_extract -> files;
+        dep_extract -> bins;
+        dep_extract -> libs;
+        dep_extract -> network;
+    }
+    
+    // Mapping Phase
+    subgraph cluster_3 {
+        label="4. Nix Mapping";
+        style=filled;
+        color=purple;
+        fillcolor=lavender;
+        
+        mapper [label="Dependency\nMapper", fillcolor=plum];
+        
+        subgraph cluster_nixpkgs {
+            label="Nixpkgs Resolution";
+            style=dotted;
+            
+            pkg_map [label="Package\nMapping\nls → coreutils", fillcolor=thistle];
+            lib_map [label="Library\nMapping\nlibc → glibc", fillcolor=thistle];
+            service_map [label="Service\nMapping\nport 80 → nginx", fillcolor=thistle];
+        }
+        
+        mapper -> pkg_map;
+        mapper -> lib_map;
+        mapper -> service_map;
+    }
+    
+    // Generation Phase
+    subgraph cluster_4 {
+        label="5. Nix Generation";
+        style=filled;
+        color=darkgreen;
+        fillcolor=lightcyan;
+        
+        generator [label="Nix Expression\nGenerator", fillcolor=lightsteelblue];
+        
+        subgraph cluster_templates {
+            label="Templates";
+            style=dashed;
+            
+            flake_tpl [label="Flake\nTemplate", fillcolor=powderblue];
+            shell_tpl [label="Shell\nTemplate", fillcolor=powderblue];
+            deriv_tpl [label="Derivation\nTemplate", fillcolor=powderblue];
+        }
+        
+        generator -> flake_tpl;
+        generator -> shell_tpl;
+        generator -> deriv_tpl;
+    }
+    
+    // Output Phase
+    subgraph cluster_5 {
+        label="6. Output";
+        style=filled;
+        color=darkblue;
+        fillcolor=aliceblue;
+        
+        flake_nix [label="flake.nix", fillcolor=palegreen, shape=note];
+        shell_nix [label="shell.nix", fillcolor=palegreen, shape=note];
+        default_nix [label="default.nix", fillcolor=palegreen, shape=note];
+        
+        subgraph cluster_result {
+            label="Build Result";
+            style=dashed;
+            
+            reproducible [label="Reproducible\nEnvironment", fillcolor=lightgreen, shape=ellipse];
+        }
+        
+        flake_nix -> reproducible;
+        shell_nix -> reproducible;
+        default_nix -> reproducible;
+    }
+    
+    // Main flow connections
+    raw_syscalls -> lexer [ltail=cluster_0, lhead=cluster_1];
+    ast -> dep_extract [ltail=cluster_1, lhead=cluster_2];
+    network -> mapper [ltail=cluster_2, lhead=cluster_3];
+    service_map -> generator [ltail=cluster_3, lhead=cluster_4];
+    deriv_tpl -> flake_nix [ltail=cluster_4, lhead=cluster_5];
+    
+    // Legend
+    subgraph cluster_legend {
+        label="Legend";
+        style=filled;
+        fillcolor=white;
+        rank=sink;
+        
+        leg1 [label="Input/Output", fillcolor=lightblue, shape=note];
+        leg2 [label="Process", fillcolor=lightgreen, shape=box];
+        leg3 [label="Data Structure", fillcolor=yellow, shape=ellipse];
+        leg4 [label="→ Data Flow", shape=plaintext];
+    }
+}

@@ -1,0 +1,43 @@
+digraph NixOutput {
+    rankdir=TB;
+    node [shape=box, style=filled];
+    
+    subgraph cluster_output {
+        label="Nix Output Files";
+        style=filled;
+        color=lightsteelblue;
+        
+        // Main output files
+        flake [label="flake.nix", fillcolor=palegreen, shape=note];
+        shell [label="shell.nix", fillcolor=palegreen, shape=note];
+        default [label="default.nix", fillcolor=palegreen, shape=note];
+        
+        // Flake.nix content
+        flake_content [label="{\n  inputs.nixpkgs.url = \"github:NixOS/nixpkgs\";\n  outputs = { self, nixpkgs }: {\n    packages = ...;\n    devShells = ...;\n  };\n}", shape=plaintext, fillcolor=white];
+        
+        // Shell.nix content
+        shell_content [label="{ pkgs ? import <nixpkgs> {} }:\npkgs.mkShell {\n  buildInputs = with pkgs; [\n    coreutils\n    glibc\n    ...\n  ];\n}", shape=plaintext, fillcolor=white];
+        
+        // Default.nix content
+        default_content [label="{ pkgs ? import <nixpkgs> {} }:\npkgs.stdenv.mkDerivation {\n  pname = \"app\";\n  version = \"1.0.0\";\n  src = ./.;\n  buildInputs = [ ... ];\n}", shape=plaintext, fillcolor=white];
+        
+        flake -> flake_content;
+        shell -> shell_content;
+        default -> default_content;
+        
+        // Additional configurations
+        subgraph cluster_config {
+            label="Configuration";
+            style=dashed;
+            
+            overlay [label="overlay.nix\n(Custom packages)", fillcolor=lightyellow, shape=note];
+            modules [label="modules/\n(Nix modules)", fillcolor=lightyellow, shape=folder];
+            tests [label="tests.nix\n(Nix tests)", fillcolor=lightyellow, shape=note];
+        }
+    }
+    
+    // Build artifacts
+    result [label="result/\n(Build output)", fillcolor=lightgreen, shape=folder];
+    flake -> result;
+    default -> result;
+}

@@ -1,0 +1,53 @@
+digraph NixGeneration {
+    rankdir=TB;
+    node [shape=box, style=filled];
+    
+    subgraph cluster_generation {
+        label="Nix Generation Phase";
+        style=filled;
+        color=lightcoral;
+        
+        // Generation stages
+        template [label="Nix Template Engine", fillcolor=pink];
+        
+        subgraph cluster_generators {
+            label="Code Generators";
+            style=dashed;
+            
+            pkg_gen [label="Package Generator\n(buildInputs, dependencies)", fillcolor=mistyrose];
+            env_gen [label="Environment Generator\n(shell.nix, default.nix)", fillcolor=mistyrose];
+            deriv_gen [label="Derivation Generator\n(mkDerivation attributes)", fillcolor=mistyrose];
+            flake_gen [label="Flake Generator\n(flake.nix)", fillcolor=mistyrose];
+        }
+        
+        template -> pkg_gen;
+        template -> env_gen;
+        template -> deriv_gen;
+        template -> flake_gen;
+        
+        // Mapping rules
+        subgraph cluster_mapping {
+            label="Dependency Mapping";
+            style=dotted;
+            
+            file_map [label="File → Nix Paths\n/etc/passwd → /etc/passwd", fillcolor=lavender];
+            exec_map [label="Executables → Nix Packages\n/bin/ls → coreutils", fillcolor=lavender];
+            lib_map [label="Libraries → Nix Libraries\nlibc.so.6 → glibc", fillcolor=lavender];
+            net_map [label="Network → Nix Services\nport 80 → nginx", fillcolor=lavender];
+        }
+        
+        pkg_gen -> file_map;
+        pkg_gen -> exec_map;
+        pkg_gen -> lib_map;
+        env_gen -> net_map;
+    }
+    
+    // Nix expression builder
+    builder [label="Nix Expression Builder\n(Combine all components)", fillcolor=gold, shape=ellipse];
+    file_map -> builder;
+    exec_map -> builder;
+    lib_map -> builder;
+    net_map -> builder;
+    deriv_gen -> builder;
+    flake_gen -> builder;
+}

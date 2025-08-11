@@ -1,0 +1,40 @@
+digraph ParsingAnalysis {
+    rankdir=TB;
+    node [shape=box, style=filled];
+    
+    subgraph cluster_parsing {
+        label="Parsing & Analysis Phase";
+        style=filled;
+        color=lightgreen;
+        
+        // Parser stages
+        lexer [label="Lexical Analysis\n(Tokenize syscalls)", fillcolor=lightcyan];
+        parser [label="Syntax Parser\n(Parse syscall structure)", fillcolor=lightcyan];
+        semantic [label="Semantic Analysis\n(Extract dependencies)", fillcolor=lightcyan];
+        
+        lexer -> parser -> semantic;
+        
+        // Analysis components
+        subgraph cluster_analysis {
+            label="Dependency Analysis";
+            style=dashed;
+            
+            file_deps [label="File Dependencies\n/etc/passwd\n/bin/ls\n/lib/libc.so", fillcolor=yellow];
+            net_deps [label="Network Dependencies\nPorts: 80, 443\nProtocols: TCP", fillcolor=yellow];
+            exec_deps [label="Executable Dependencies\n/bin/ls\n/usr/bin/env", fillcolor=yellow];
+            lib_deps [label="Library Dependencies\nlibc.so.6\nlibm.so.6", fillcolor=yellow];
+        }
+        
+        semantic -> file_deps;
+        semantic -> net_deps;
+        semantic -> exec_deps;
+        semantic -> lib_deps;
+    }
+    
+    // Intermediate representation
+    ir [label="Intermediate Representation\n(Structured dependency graph)", fillcolor=orange, shape=ellipse];
+    file_deps -> ir;
+    net_deps -> ir;
+    exec_deps -> ir;
+    lib_deps -> ir;
+}

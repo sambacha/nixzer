@@ -1,0 +1,30 @@
+digraph SystraceInput {
+    rankdir=TB;
+    node [shape=box, style=filled];
+    
+    // Input components
+    subgraph cluster_input {
+        label="Systrace Input";
+        style=filled;
+        color=lightgrey;
+        
+        trace_file [label="trace.strace\n(Raw systrace output)", fillcolor=lightblue];
+        
+        // Example syscalls
+        syscall1 [label="openat(AT_FDCWD, \"/etc/passwd\", O_RDONLY)", shape=plaintext, fillcolor=white];
+        syscall2 [label="read(3, buf, 4096)", shape=plaintext, fillcolor=white];
+        syscall3 [label="write(1, \"Hello\\n\", 6)", shape=plaintext, fillcolor=white];
+        syscall4 [label="execve(\"/bin/ls\", [\"ls\", \"-la\"], env)", shape=plaintext, fillcolor=white];
+        syscall5 [label="socket(AF_INET, SOCK_STREAM, 0)", shape=plaintext, fillcolor=white];
+        
+        trace_file -> syscall1;
+        trace_file -> syscall2;
+        trace_file -> syscall3;
+        trace_file -> syscall4;
+        trace_file -> syscall5;
+    }
+    
+    // Metadata
+    metadata [label="Process Info\nPID: 1234\nCommand: ./app\nTimestamps", fillcolor=lightyellow];
+    trace_file -> metadata;
+}
