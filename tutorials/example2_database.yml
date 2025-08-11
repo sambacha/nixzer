@@ -1,0 +1,110 @@
+---
+- name: Setup PostgreSQL Database Server
+  hosts: database
+  become: yes
+  
+  tasks:
+    - name: Install PostgreSQL
+      package:
+        name: 
+          - postgresql
+          - postgresql-contrib
+          - python3-psycopg2
+        state: present
+    
+    - name: Create database admin user
+      user:
+        name: dbadmin
+        groups: 
+          - postgres
+          - sudo
+        shell: /bin/bash
+        createhome: yes
+        comment: "Database Administrator"
+        uid: 5432
+    
+    - name: Create application user
+      user:
+        name: appuser
+        system: yes
+        shell: /bin/false
+        createhome: no
+        comment: "Application Database User"
+    
+    - name: Configure PostgreSQL authentication
+      copy:
+        content: |
+          # Database administrative login by Unix domain socket
+          local   all             postgres                                peer
+          
+          # TYPE  DATABASE        USER            ADDRESS                 METHOD
+          local   all             all                                     md5
+          host    all             all             127.0.0.1/32            md5
+          host    all             all             ::1/128                 md5
+          host    all             all             10.0.0.0/8              md5
+        dest: /etc/postgresql/13/main/pg_hba.conf
+        owner: postgres
+        group: postgres
+        mode: '0640'
+        backup: yes
+    
+    - name: Configure PostgreSQL settings
+      lineinfile:
+        path: /etc/postgresql/13/main/postgresql.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        backup: yes
+      loop:
+        - { regexp: '^#?listen_addresses', line: "listen_addresses = '*'" }
+        - { regexp: '^#?max_connections', line: "max_connections = 200" }
+        - { regexp: '^#?shared_buffers', line: "shared_buffers = 256MB" }
+        - { regexp: '^#?log_statement', line: "log_statement = 'all'" }
+    
+    - name: Create application database
+      postgresql_db:
+        name: myapp
+        encoding: UTF-8
+        locale: en_US.UTF-8
+        template: template0
+      become_user: postgres
+    
+    - name: Create database user with privileges
+      postgresql_user:
+        name: appuser
+        password: "{{ db_password | default('changeme123') }}"
+        db: myapp
+        priv: ALL
+        role_attr_flags: NOSUPERUSER,NOCREATEDB,NOCREATEROLE
+      become_user: postgres
+    
+    - name: Start and enable PostgreSQL
+      service:
+        name: postgresql
+        state: started
+        enabled: yes
+    
+    - name: Setup database backup script
+      copy:
+        content: |
+          #!/bin/bash
+          # PostgreSQL backup script
+          BACKUP_DIR="/var/backups/postgresql"
+          DATE=$(date +%Y%m%d_%H%M%S)
+          
+          mkdir -p "$BACKUP_DIR"
+          pg_dump -U postgres myapp > "$BACKUP_DIR/myapp_$DATE.sql"
+          
+          # Keep only last 7 days of backups
+          find "$BACKUP_DIR" -name "myapp_*.sql" -mtime +7 -delete
+        dest: /usr/local/bin/backup-postgres.sh
+        mode: '0755'
+        owner: root
+        group: root
+    
+    - name: Schedule daily database backup
+      cron:
+        name: "PostgreSQL backup"
+        minute: "30"
+        hour: "2"
+        job: "/usr/local/bin/backup-postgres.sh"
+        user: postgres

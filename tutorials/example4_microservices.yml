@@ -1,0 +1,270 @@
+---
+- name: Deploy Microservices Infrastructure
+  hosts: microservices
+  become: yes
+  
+  tasks:
+    - name: Install base packages
+      package:
+        name:
+          - nginx
+          - redis
+          - nodejs
+          - npm
+          - python3
+          - python3-pip
+          - golang-go
+        state: present
+    
+    - name: Create service users
+      user:
+        name: "{{ item }}"
+        system: yes
+        shell: /bin/false
+        createhome: no
+        comment: "{{ item | title }} Service User"
+      loop:
+        - gateway
+        - auth
+        - users
+        - orders
+        - notifications
+    
+    - name: Create service directories
+      file:
+        path: "/opt/{{ item }}"
+        state: directory
+        owner: "{{ item }}"
+        group: "{{ item }}"
+        mode: '0755'
+      loop:
+        - gateway
+        - auth
+        - users
+        - orders
+        - notifications
+    
+    - name: Deploy API Gateway configuration
+      copy:
+        content: |
+          upstream auth_service {
+              server 127.0.0.1:3001;
+          }
+          
+          upstream users_service {
+              server 127.0.0.1:3002;
+          }
+          
+          upstream orders_service {
+              server 127.0.0.1:3003;
+          }
+          
+          upstream notifications_service {
+              server 127.0.0.1:3004;
+          }
+          
+          server {
+              listen 80;
+              server_name api.example.com;
+              
+              # Rate limiting
+              limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+              limit_req zone=api burst=20 nodelay;
+              
+              # Health check
+              location /health {
+                  return 200 "OK";
+                  add_header Content-Type text/plain;
+              }
+              
+              # Authentication service
+              location /api/auth/ {
+                  proxy_pass http://auth_service/;
+                  include proxy_params;
+              }
+              
+              # Users service
+              location /api/users/ {
+                  proxy_pass http://users_service/;
+                  include proxy_params;
+                  auth_request /auth;
+              }
+              
+              # Orders service  
+              location /api/orders/ {
+                  proxy_pass http://orders_service/;
+                  include proxy_params;
+                  auth_request /auth;
+              }
+              
+              # Notifications service
+              location /api/notifications/ {
+                  proxy_pass http://notifications_service/;
+                  include proxy_params;
+                  auth_request /auth;
+              }
+              
+              # Internal auth check
+              location = /auth {
+                  internal;
+                  proxy_pass http://auth_service/verify;
+                  proxy_pass_request_body off;
+                  proxy_set_header Content-Length "";
+                  proxy_set_header X-Original-URI $request_uri;
+              }
+          }
+        dest: /etc/nginx/sites-available/api-gateway
+        mode: '0644'
+    
+    - name: Enable API Gateway
+      file:
+        src: /etc/nginx/sites-available/api-gateway
+        dest: /etc/nginx/sites-enabled/api-gateway
+        state: link
+    
+    - name: Deploy service configurations
+      copy:
+        content: |
+          [Unit]
+          Description={{ item.name }} Service
+          After=network.target {{ item.after | default('') }}
+          
+          [Service]
+          Type=simple
+          User={{ item.user }}
+          Group={{ item.user }}
+          WorkingDirectory=/opt/{{ item.user }}
+          ExecStart={{ item.command }}
+          Restart=always
+          RestartSec=10
+          Environment={{ item.env | default('') }}
+          
+          [Install]
+          WantedBy=multi-user.target
+        dest: "/etc/systemd/system/{{ item.user }}.service"
+        mode: '0644'
+      loop:
+        - name: Auth Service
+          user: auth
+          command: /usr/bin/node server.js
+          after: redis.service
+          env: REDIS_URL=redis://localhost:6379/0
+        - name: Users Service
+          user: users
+          command: /usr/bin/python3 app.py
+          env: DATABASE_URL=sqlite:///users.db
+        - name: Orders Service
+          user: orders
+          command: /opt/orders/orders-service
+          env: DATABASE_URL=sqlite:///orders.db
+        - name: Notifications Service
+          user: notifications
+          command: /usr/bin/python3 notifier.py
+          after: redis.service
+          env: REDIS_URL=redis://localhost:6379/1
+    
+    - name: Deploy service discovery configuration
+      copy:
+        content: |
+          # Service Registry Configuration
+          services:
+            auth:
+              host: localhost
+              port: 3001
+              health_check: /health
+              tags: [auth, security]
+            
+            users:
+              host: localhost
+              port: 3002
+              health_check: /health
+              tags: [users, data]
+            
+            orders:
+              host: localhost
+              port: 3003
+              health_check: /health
+              tags: [orders, business]
+            
+            notifications:
+              host: localhost
+              port: 3004
+              health_check: /health
+              tags: [notifications, messaging]
+        dest: /etc/service-registry.yml
+        mode: '0644'
+    
+    - name: Configure Redis for service communication
+      lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^bind', line: 'bind 127.0.0.1' }
+        - { regexp: '^# maxmemory', line: 'maxmemory 256mb' }
+        - { regexp: '^# maxmemory-policy', line: 'maxmemory-policy allkeys-lru' }
+    
+    - name: Start and enable services
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - nginx
+        - redis
+        - auth
+        - users
+        - orders
+        - notifications
+    
+    - name: Deploy monitoring and logging
+      copy:
+        content: |
+          #!/bin/bash
+          # Microservices health monitor
+          
+          SERVICES=(auth users orders notifications)
+          LOG_FILE="/var/log/microservices-health.log"
+          
+          echo "$(date): Starting health check" >> "$LOG_FILE"
+          
+          for service in "${SERVICES[@]}"; do
+              if systemctl is-active --quiet "$service"; then
+                  echo "$(date): $service - OK" >> "$LOG_FILE"
+              else
+                  echo "$(date): $service - FAILED" >> "$LOG_FILE"
+                  systemctl restart "$service"
+                  echo "$(date): $service - RESTARTED" >> "$LOG_FILE"
+              fi
+          done
+          
+          # Check nginx gateway
+          if ! curl -s http://localhost/health > /dev/null; then
+              echo "$(date): API Gateway - FAILED" >> "$LOG_FILE"
+              systemctl restart nginx
+          else
+              echo "$(date): API Gateway - OK" >> "$LOG_FILE"
+          fi
+        dest: /usr/local/bin/microservices-health.sh
+        mode: '0755'
+    
+    - name: Schedule health monitoring
+      cron:
+        name: "Microservices health check"
+        minute: "*/2"
+        job: "/usr/local/bin/microservices-health.sh"
+    
+    - name: Setup log rotation
+      copy:
+        content: |
+          /var/log/microservices-health.log {
+              daily
+              missingok
+              rotate 30
+              compress
+              delaycompress
+              notifempty
+              copytruncate
+          }
+        dest: /etc/logrotate.d/microservices
+        mode: '0644'

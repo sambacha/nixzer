@@ -1,0 +1,62 @@
+---
+- name: Configure database server
+  hosts: database
+  become: yes
+  
+  tasks:
+    - name: Install PostgreSQL
+      package:
+        name: 
+          - postgresql
+          - postgresql-contrib
+        state: present
+    
+    - name: Create database user
+      user:
+        name: dbadmin
+        groups: postgres
+        shell: /bin/bash
+        createhome: yes
+        comment: "Database Administrator"
+    
+    - name: Configure PostgreSQL
+      lineinfile:
+        path: /etc/postgresql/13/main/postgresql.conf
+        regexp: '^#?listen_addresses'
+        line: "listen_addresses = '*'"
+        state: present
+    
+    - name: Set PostgreSQL password authentication
+      copy:
+        content: |
+          local   all   postgres   peer
+          local   all   all        md5
+          host    all   all        0.0.0.0/0   md5
+        dest: /etc/postgresql/13/main/pg_hba.conf
+        mode: '0640'
+        owner: postgres
+        group: postgres
+    
+    - name: Start PostgreSQL service
+      service:
+        name: postgresql
+        state: started
+        enabled: yes
+    
+    - name: Configure backup script
+      copy:
+        content: |
+          #!/bin/bash
+          pg_dump -U postgres mydb > /backup/mydb_$(date +%Y%m%d).sql
+        dest: /usr/local/bin/backup-db.sh
+        mode: '0755'
+        owner: root
+        group: root
+    
+    - name: Schedule database backup
+      cron:
+        name: "Database backup"
+        minute: "30"
+        hour: "1"
+        job: "/usr/local/bin/backup-db.sh"
+        user: postgres

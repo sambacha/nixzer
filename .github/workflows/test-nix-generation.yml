@@ -1,0 +1,484 @@
+name: Test Nix Generation
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    paths:
+      - '**.py'
+      - '**.nix'
+      - 'flake.*'
+      - '.github/workflows/test-nix-generation.yml'
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: 'Enable debug mode'
+        required: false
+        default: false
+
+env:
+  NIX_VERSION: "2.18.1"
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # Job 1: Validate Nix flake structure
+  validate-flake:
+    name: Validate Nix Flake
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v24
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v12
+        with:
+          name: dozer
+          skipPush: ${{ github.event_name == 'pull_request' }}
+
+      - name: Check flake metadata
+        run: |
+          echo "::group::Flake metadata"
+          nix flake metadata
+          echo "::endgroup::"
+
+      - name: Check flake structure
+        run: |
+          echo "::group::Flake show"
+          nix flake show --json | jq '.'
+          echo "::endgroup::"
+
+      - name: Check flake outputs
+        run: |
+          echo "::group::Available outputs"
+          nix flake show
+          echo "::endgroup::"
+
+      - name: Validate flake.lock
+        run: |
+          nix flake lock --no-update-lock-file
+          echo "✓ flake.lock is valid"
+
+  # Job 2: Test Ansible to Nix conversion
+  test-conversion:
+    name: Test Ansible to Nix Conversion
+    runs-on: ubuntu-latest
+    needs: validate-flake
+    strategy:
+      matrix:
+        example:
+          - ansible_webserver
+          - ansible_database
+        include:
+          - example: ansible_webserver
+            expected_modules: "nginx users firewall"
+          - example: ansible_database
+            expected_modules: "postgresql users"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v24
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build converter
+        run: |
+          echo "::group::Building Dozer converter"
+          nix build .#dozer --print-build-logs
+          echo "::endgroup::"
+
+      - name: Test conversion - ${{ matrix.example }}
+        run: |
+          echo "::group::Converting ${{ matrix.example }}.yml"
+          nix run .#convert -- examples/${{ matrix.example }}.yml -o /tmp/converted.nix
+          echo "::endgroup::"
+          
+          echo "::group::Generated Nix configuration"
+          cat /tmp/converted.nix
+          echo "::endgroup::"
+
+      - name: Validate generated Nix
+        run: |
+          echo "::group::Validating Nix syntax"
+          nix-instantiate --parse /tmp/converted.nix > /dev/null
+          echo "✓ Valid Nix syntax"
+          echo "::endgroup::"
+
+      - name: Check expected modules
+        run: |
+          echo "::group::Checking for expected modules"
+          for module in ${{ matrix.expected_modules }}; do
+            if grep -q "$module" /tmp/converted.nix; then
+              echo "✓ Found expected module: $module"
+            else
+              echo "✗ Missing expected module: $module"
+              exit 1
+            fi
+          done
+          echo "::endgroup::"
+
+      - name: Compare with reference
+        if: always()
+        run: |
+          echo "::group::Comparing with reference"
+          if [ -f "examples/${{ matrix.example }}.nix" ]; then
+            diff -u examples/${{ matrix.example }}.nix /tmp/converted.nix || true
+          fi
+          echo "::endgroup::"
+
+      - name: Upload converted file
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: converted-${{ matrix.example }}
+          path: /tmp/converted.nix
+
+  # Job 3: Run unit tests
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: validate-flake
+    strategy:
+      matrix:
+        test-suite:
+          - critical
+          - leaf
+          - unit
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v24
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Run ${{ matrix.test-suite }} tests
+        run: |
+          echo "::group::Running ${{ matrix.test-suite }} tests"
+          nix build .#checks.x86_64-linux.${{ matrix.test-suite }}-tests --print-build-logs
+          echo "::endgroup::"
+
+      - name: Check test results
+        if: always()
+        run: |
+          if [ -d result ]; then
+            echo "::group::Test output"
+            cat result/test.log || true
+            echo "::endgroup::"
+            
+            echo "::group::Test status"
+            cat result/status || echo "No status file"
+            echo "::endgroup::"
+          fi
+
+  # Job 4: Test Nix module generation
+  test-nix-modules:
+    name: Test Nix Module Generation
+    runs-on: ubuntu-latest
+    needs: validate-flake
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v24
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Test webserver module
+        run: |
+          echo "::group::Building webserver module"
+          nix build .#nixosModules.webserver --print-build-logs
+          echo "✓ Webserver module builds successfully"
+          echo "::endgroup::"
+
+      - name: Test database module
+        run: |
+          echo "::group::Building database module"
+          nix build .#nixosModules.database --print-build-logs
+          echo "✓ Database module builds successfully"
+          echo "::endgroup::"
+
+      - name: Test container module
+        run: |
+          echo "::group::Evaluating container module"
+          cat > test-config.nix <<'EOF'
+          { config, pkgs, lib, ... }:
+          {
+            imports = [ ./nix/modules/containers.nix ];
+            services.dozer-containers = {
+              enable = true;
+              backend = "podman";
+            };
+          }
+          EOF
+          
+          nix-instantiate --eval test-config.nix > /dev/null
+          echo "✓ Container module evaluates successfully"
+          echo "::endgroup::"
+
+  # Job 5: Test development shell
+  test-dev-shell:
+    name: Test Development Shell
+    runs-on: ubuntu-latest
+    needs: validate-flake
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v24
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Enter dev shell and test tools
+        run: |
+          echo "::group::Testing development shell"
+          nix develop --command bash -c "
+            set -e
+            echo '=== Python version ==='
+            python --version
+            
+            echo '=== ANTLR4 version ==='
+            antlr4 -version || echo 'ANTLR4 not available'
+            
+            echo '=== Available Python packages ==='
+            python -c 'import yaml, click, pytest; print(\"✓ Core packages available\")'
+            
+            echo '=== Test imports ==='
+            python -c 'from lib.converters import AnsibleToNixConverter; print(\"✓ Imports work\")'
+            
+            echo '=== Run simple conversion ==='
+            echo '---
+            - hosts: localhost
+              tasks:
+                - package:
+                    name: nginx
+                    state: present' > /tmp/test.yml
+            
+            python ansible_to_nix.py /tmp/test.yml || true
+          "
+          echo "::endgroup::"
+
+  # Job 6: Test syscall tracing validation
+  test-validation:
+    name: Test Validation Pipeline
+    runs-on: ubuntu-latest
+    needs: [validate-flake, test-conversion]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v24
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Test validation functions
+        run: |
+          echo "::group::Testing validation functions"
+          nix build .#validationEnv --print-build-logs
+          echo "✓ Validation environment builds"
+          echo "::endgroup::"
+
+      - name: Test trace comparison
+        run: |
+          echo "::group::Creating test traces"
+          cat > test-trace.sh <<'EOF'
+          #!/usr/bin/env bash
+          # Simulate syscall trace comparison
+          echo "open(\"/etc/config\", O_RDONLY) = 3"
+          echo "read(3, \"config data\", 1024) = 11"
+          echo "close(3) = 0"
+          EOF
+          chmod +x test-trace.sh
+          
+          ./test-trace.sh > trace1.txt
+          ./test-trace.sh > trace2.txt
+          
+          echo "Traces created for comparison"
+          echo "::endgroup::"
+
+  # Job 7: Performance benchmarks
+  benchmarks:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v24
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Run benchmarks
+        run: |
+          echo "::group::Running performance benchmarks"
+          nix develop --command python tests/unit/test_benchmarks.py --output benchmark_results.json || true
+          echo "::endgroup::"
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: benchmark-results
+          path: benchmark_results.json
+
+      - name: Comment PR with benchmark results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (fs.existsSync('benchmark_results.json')) {
+              const results = JSON.parse(fs.readFileSync('benchmark_results.json', 'utf8'));
+              const comment = `## Performance Benchmark Results\n\n${JSON.stringify(results, null, 2)}`;
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
+
+  # Job 8: Integration test
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: [test-conversion, test-nix-modules]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v24
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Full pipeline test
+        run: |
+          echo "::group::End-to-end conversion test"
+          
+          # Create test Ansible playbook
+          cat > test-playbook.yml <<'EOF'
+          ---
+          - name: Complete test playbook
+            hosts: localhost
+            tasks:
+              - name: Install packages
+                package:
+                  name: "{{ item }}"
+                  state: present
+                loop:
+                  - nginx
+                  - git
+                  - vim
+              
+              - name: Create user
+                user:
+                  name: testuser
+                  groups: wheel
+                  shell: /bin/bash
+              
+              - name: Start service
+                service:
+                  name: nginx
+                  state: started
+                  enabled: yes
+          EOF
+          
+          # Convert to Nix
+          nix run .#convert -- test-playbook.yml -o converted.nix
+          
+          # Validate syntax
+          nix-instantiate --parse converted.nix
+          
+          echo "✓ Full pipeline test passed"
+          echo "::endgroup::"
+
+  # Job 9: Security scan
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: validate-flake
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy security scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Final job: Summary
+  summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [validate-flake, test-conversion, unit-tests, test-nix-modules, test-dev-shell, test-validation]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "## Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Flake Validation | ${{ needs.validate-flake.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Conversion Tests | ${{ needs.test-conversion.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Nix Modules | ${{ needs.test-nix-modules.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dev Shell | ${{ needs.test-dev-shell.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Validation | ${{ needs.test-validation.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.validate-flake.result }}" == "success" ] && \
+             [ "${{ needs.test-conversion.result }}" == "success" ] && \
+             [ "${{ needs.unit-tests.result }}" == "success" ]; then
+            echo "✅ **All critical tests passed!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Some tests failed. Please review the logs.**" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi

@@ -1,0 +1,62 @@
+---
+- name: Deploy NGINX Web Server
+  hosts: webservers
+  become: yes
+  
+  tasks:
+    - name: Install NGINX package
+      package:
+        name: nginx
+        state: present
+    
+    - name: Create web directory
+      file:
+        path: /var/www/mysite
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+    
+    - name: Deploy homepage
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head><title>My Website</title></head>
+          <body>
+            <h1>Welcome to My Website</h1>
+            <p>Deployed with Ansible, migrated to Nix!</p>
+          </body>
+          </html>
+        dest: /var/www/mysite/index.html
+        owner: www-data
+        group: www-data
+        mode: '0644'
+    
+    - name: Configure NGINX virtual host
+      copy:
+        content: |
+          server {
+              listen 80;
+              server_name mysite.local;
+              root /var/www/mysite;
+              index index.html;
+              
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+          }
+        dest: /etc/nginx/sites-available/mysite
+        mode: '0644'
+    
+    - name: Enable NGINX site
+      file:
+        src: /etc/nginx/sites-available/mysite
+        dest: /etc/nginx/sites-enabled/mysite
+        state: link
+    
+    - name: Start and enable NGINX
+      service:
+        name: nginx
+        state: started
+        enabled: yes

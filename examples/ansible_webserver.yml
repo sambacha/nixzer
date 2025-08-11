@@ -1,0 +1,87 @@
+---
+- name: Configure web server
+  hosts: localhost
+  become: yes
+  
+  tasks:
+    - name: Install nginx
+      package:
+        name: nginx
+        state: present
+    
+    - name: Install development tools
+      package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - git
+        - vim
+        - curl
+        - python3
+    
+    - name: Create web user
+      user:
+        name: webadmin
+        groups: 
+          - wheel
+          - www-data
+        shell: /bin/bash
+        createhome: yes
+        comment: "Web Administrator"
+    
+    - name: Create web root directory
+      file:
+        path: /var/www/html
+        state: directory
+        mode: '0755'
+        owner: webadmin
+        group: www-data
+    
+    - name: Deploy index.html
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head><title>Welcome</title></head>
+          <body><h1>Welcome to our server</h1></body>
+          </html>
+        dest: /var/www/html/index.html
+        mode: '0644'
+        owner: webadmin
+        group: www-data
+    
+    - name: Configure nginx site
+      copy:
+        content: |
+          server {
+              listen 80;
+              server_name example.com;
+              root /var/www/html;
+              index index.html;
+              
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+          }
+        dest: /etc/nginx/sites-available/default
+        mode: '0644'
+    
+    - name: Start and enable nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+    
+    - name: Configure firewall
+      ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+    
+    - name: Setup daily backup cron job
+      cron:
+        name: "Daily backup"
+        minute: "0"
+        hour: "2"
+        job: "/usr/local/bin/backup.sh"
+        user: webadmin

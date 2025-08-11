@@ -1,0 +1,402 @@
+---
+- name: Setup CI/CD Pipeline Infrastructure
+  hosts: cicd
+  become: yes
+  
+  tasks:
+    - name: Install CI/CD tools
+      package:
+        name:
+          - git
+          - docker.io
+          - jenkins
+          - nginx
+          - python3
+          - python3-pip
+          - nodejs
+          - npm
+          - golang-go
+          - openjdk-11-jdk
+        state: present
+    
+    - name: Create CI/CD users
+      user:
+        name: "{{ item.name }}"
+        groups: "{{ item.groups }}"
+        shell: "{{ item.shell }}"
+        createhome: "{{ item.createhome }}"
+        comment: "{{ item.comment }}"
+      loop:
+        - name: jenkins
+          groups: docker,sudo
+          shell: /bin/bash
+          createhome: yes
+          comment: Jenkins CI User
+        - name: deploy
+          groups: docker
+          shell: /bin/bash
+          createhome: yes
+          comment: Deployment User
+        - name: runner
+          groups: docker
+          shell: /bin/bash
+          createhome: yes
+          comment: Pipeline Runner
+    
+    - name: Create CI/CD directories
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: /opt/jenkins
+          owner: jenkins
+          group: jenkins
+          mode: '0755'
+        - path: /opt/runners
+          owner: runner
+          group: runner
+          mode: '0755'
+        - path: /opt/artifacts
+          owner: deploy
+          group: deploy
+          mode: '0755'
+        - path: /opt/docker-registry
+          owner: root
+          group: docker
+          mode: '0755'
+    
+    - name: Configure Jenkins
+      copy:
+        content: |
+          # Jenkins Configuration
+          JENKINS_HOME=/opt/jenkins
+          JENKINS_USER=jenkins
+          JENKINS_GROUP=jenkins
+          JENKINS_WAR=/usr/share/jenkins/jenkins.war
+          JENKINS_LOG=/var/log/jenkins/jenkins.log
+          JAVA_ARGS="-Djava.awt.headless=true -Xmx2048m"
+          JENKINS_ARGS="--webroot=/var/cache/jenkins/war --httpPort=8080"
+        dest: /etc/default/jenkins
+        mode: '0644'
+    
+    - name: Deploy Jenkins systemd service
+      copy:
+        content: |
+          [Unit]
+          Description=Jenkins Continuous Integration Server
+          After=network.target
+          
+          [Service]
+          Type=notify
+          NotifyAccess=main
+          ExecStart=/usr/bin/java $JAVA_ARGS -jar $JENKINS_WAR $JENKINS_ARGS
+          Restart=on-failure
+          RestartSec=5
+          User=jenkins
+          Group=jenkins
+          Environment=JENKINS_HOME=/opt/jenkins
+          
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/jenkins.service
+        mode: '0644'
+    
+    - name: Setup Docker Registry
+      copy:
+        content: |
+          version: '3.8'
+          
+          services:
+            registry:
+              image: registry:2
+              ports:
+                - "5000:5000"
+              environment:
+                REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /data
+                REGISTRY_AUTH: htpasswd
+                REGISTRY_AUTH_HTPASSWD_REALM: Registry Realm
+                REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+              volumes:
+                - /opt/docker-registry/data:/data
+                - /opt/docker-registry/auth:/auth
+              restart: unless-stopped
+        dest: /opt/docker-registry/docker-compose.yml
+        mode: '0644'
+    
+    - name: Create registry authentication
+      htpasswd:
+        path: /opt/docker-registry/auth/htpasswd
+        name: admin
+        password: "{{ registry_password | default('admin123') }}"
+        mode: '0640'
+        group: docker
+    
+    - name: Deploy CI/CD pipeline scripts
+      copy:
+        content: |
+          #!/bin/bash
+          # CI/CD Pipeline Script
+          set -e
+          
+          PROJECT_NAME="$1"
+          BRANCH="${2:-main}"
+          BUILD_NUMBER="${BUILD_NUMBER:-$(date +%Y%m%d%H%M%S)}"
+          
+          echo "=== CI/CD Pipeline for $PROJECT_NAME ==="
+          echo "Branch: $BRANCH"
+          echo "Build: $BUILD_NUMBER"
+          
+          # Clone/update repository
+          WORKSPACE="/tmp/builds/$PROJECT_NAME"
+          if [ -d "$WORKSPACE" ]; then
+              cd "$WORKSPACE"
+              git pull origin "$BRANCH"
+          else
+              git clone "https://github.com/example/$PROJECT_NAME.git" "$WORKSPACE"
+              cd "$WORKSPACE"
+              git checkout "$BRANCH"
+          fi
+          
+          # Run tests
+          echo "=== Running Tests ==="
+          if [ -f "package.json" ]; then
+              npm install
+              npm test
+          elif [ -f "requirements.txt" ]; then
+              python3 -m venv venv
+              source venv/bin/activate
+              pip install -r requirements.txt
+              python -m pytest
+          elif [ -f "go.mod" ]; then
+              go test ./...
+          fi
+          
+          # Build application
+          echo "=== Building Application ==="
+          if [ -f "Dockerfile" ]; then
+              docker build -t "localhost:5000/$PROJECT_NAME:$BUILD_NUMBER" .
+              docker tag "localhost:5000/$PROJECT_NAME:$BUILD_NUMBER" "localhost:5000/$PROJECT_NAME:latest"
+              
+              # Push to registry
+              docker push "localhost:5000/$PROJECT_NAME:$BUILD_NUMBER"
+              docker push "localhost:5000/$PROJECT_NAME:latest"
+          fi
+          
+          # Deploy if on main branch
+          if [ "$BRANCH" = "main" ]; then
+              echo "=== Deploying to Production ==="
+              /opt/deploy/deploy.sh "$PROJECT_NAME" "$BUILD_NUMBER"
+          fi
+          
+          echo "=== Pipeline Complete ==="
+        dest: /usr/local/bin/ci-pipeline.sh
+        mode: '0755'
+    
+    - name: Deploy deployment script
+      copy:
+        content: |
+          #!/bin/bash
+          # Deployment Script
+          set -e
+          
+          PROJECT_NAME="$1"
+          BUILD_NUMBER="$2"
+          
+          echo "=== Deploying $PROJECT_NAME:$BUILD_NUMBER ==="
+          
+          # Rolling deployment
+          if docker ps | grep -q "$PROJECT_NAME"; then
+              echo "Stopping old version..."
+              docker stop "$PROJECT_NAME" || true
+              docker rm "$PROJECT_NAME" || true
+          fi
+          
+          echo "Starting new version..."
+          docker run -d \
+              --name "$PROJECT_NAME" \
+              --restart unless-stopped \
+              -p "80:80" \
+              "localhost:5000/$PROJECT_NAME:$BUILD_NUMBER"
+          
+          # Health check
+          echo "Performing health check..."
+          sleep 10
+          
+          for i in {1..30}; do
+              if curl -s http://localhost/health > /dev/null; then
+                  echo "Deployment successful!"
+                  exit 0
+              fi
+              sleep 2
+          done
+          
+          echo "Deployment failed - health check timeout"
+          exit 1
+        dest: /opt/deploy/deploy.sh
+        mode: '0755'
+    
+    - name: Configure NGINX for CI/CD dashboard
+      copy:
+        content: |
+          server {
+              listen 80;
+              server_name cicd.example.com;
+              
+              # Jenkins
+              location /jenkins/ {
+                  proxy_pass http://127.0.0.1:8080/jenkins/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+              
+              # Docker Registry UI
+              location /registry/ {
+                  proxy_pass http://127.0.0.1:5000/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+              
+              # Artifacts
+              location /artifacts/ {
+                  alias /opt/artifacts/;
+                  autoindex on;
+                  autoindex_exact_size off;
+                  autoindex_localtime on;
+              }
+              
+              # Status page
+              location / {
+                  return 301 /jenkins/;
+              }
+          }
+        dest: /etc/nginx/sites-available/cicd-dashboard
+        mode: '0644'
+    
+    - name: Enable CI/CD dashboard
+      file:
+        src: /etc/nginx/sites-available/cicd-dashboard
+        dest: /etc/nginx/sites-enabled/cicd-dashboard
+        state: link
+    
+    - name: Setup webhook listener
+      copy:
+        content: |
+          #!/usr/bin/env python3
+          # GitHub webhook listener
+          
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+          import subprocess
+          import hmac
+          import hashlib
+          
+          WEBHOOK_SECRET = "{{ webhook_secret | default('your-secret') }}"
+          
+          class WebhookHandler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  if self.path != '/webhook':
+                      self.send_error(404)
+                      return
+                  
+                  content_length = int(self.headers['Content-Length'])
+                  post_data = self.rfile.read(content_length)
+                  
+                  # Verify signature
+                  signature = self.headers.get('X-Hub-Signature-256', '')
+                  expected = hmac.new(
+                      WEBHOOK_SECRET.encode(),
+                      post_data,
+                      hashlib.sha256
+                  ).hexdigest()
+                  
+                  if not hmac.compare_digest(f'sha256={expected}', signature):
+                      self.send_error(403)
+                      return
+                  
+                  # Parse payload
+                  payload = json.loads(post_data.decode())
+                  repo_name = payload['repository']['name']
+                  branch = payload['ref'].split('/')[-1]
+                  
+                  # Trigger pipeline
+                  subprocess.Popen([
+                      '/usr/local/bin/ci-pipeline.sh',
+                      repo_name,
+                      branch
+                  ])
+                  
+                  self.send_response(200)
+                  self.end_headers()
+                  self.wfile.write(b'Pipeline triggered')
+          
+          if __name__ == '__main__':
+              server = HTTPServer(('0.0.0.0', 9000), WebhookHandler)
+              server.serve_forever()
+        dest: /opt/webhook-listener.py
+        mode: '0755'
+    
+    - name: Deploy webhook service
+      copy:
+        content: |
+          [Unit]
+          Description=GitHub Webhook Listener
+          After=network.target
+          
+          [Service]
+          Type=simple
+          User=jenkins
+          Group=jenkins
+          ExecStart=/usr/bin/python3 /opt/webhook-listener.py
+          Restart=always
+          RestartSec=5
+          
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/webhook-listener.service
+        mode: '0644'
+    
+    - name: Start and enable all services
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - docker
+        - jenkins
+        - nginx
+        - webhook-listener
+    
+    - name: Start Docker registry
+      docker_compose:
+        project_src: /opt/docker-registry
+        state: present
+    
+    - name: Setup log rotation for CI/CD logs
+      copy:
+        content: |
+          /var/log/jenkins/*.log {
+              daily
+              missingok
+              rotate 30
+              compress
+              delaycompress
+              notifempty
+              copytruncate
+          }
+          
+          /tmp/builds/**/logs/*.log {
+              daily
+              missingok
+              rotate 7
+              compress
+              delaycompress
+              notifempty
+              copytruncate
+          }
+        dest: /etc/logrotate.d/cicd
+        mode: '0644'
