@@ -15,7 +15,7 @@ COPY . .
 RUN nix build .#dozer --no-link -o result
 
 # Stage 2: Python builder (alternative without Nix)
-FROM python:3.11-slim AS python-builder
+FROM python:3.13-slim AS python-builder
 
 WORKDIR /build
 
@@ -56,7 +56,7 @@ RUN ln -s /opt/dozer/bin/dozer /usr/local/bin/dozer && \
     ln -s /opt/dozer/bin/ansible-to-nix /usr/local/bin/ansible-to-nix
 
 # Stage 4: Runtime (from Python build)
-FROM python:3.11-slim AS runtime-python
+FROM python:3.13-slim AS runtime-python
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
@@ -79,7 +79,7 @@ RUN echo '#!/bin/bash\npython /app/dozer.py "$@"' > /usr/local/bin/dozer && \
     chmod +x /usr/local/bin/ansible-to-nix
 
 # Stage 5: Development environment
-FROM python:3.11 AS development
+FROM python:3.13 AS development
 
 # Install development tools
 RUN apt-get update && apt-get install -y \
