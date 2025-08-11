@@ -3,7 +3,7 @@
 # Build: docker build -f AntlrDockerfile -t dozer-antlr:latest .
 # Usage: docker run --rm -v "$(pwd):/dozer" dozer-antlr
 
-FROM openjdk:8-jdk
+FROM openjdk:18-jdk
 
 VOLUME /dozer
 WORKDIR /dozer
