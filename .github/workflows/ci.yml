@@ -131,7 +131,7 @@ jobs:
           nix develop --command python tests/unit/run_tests.py --coverage --export coverage.json
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v5
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11'
         with:
           file: ./coverage.xml
